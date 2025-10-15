@@ -1,0 +1,27 @@
+[project]
+name = "spotify-festival-playlist-generator"
+version = "0.1.0"
+description = "Automated creation of festival playlists using the Spotify API"
+authors = [
+    { name = "Franz Keilholz", email = "franz@keilholz.biz" }
+]
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+
+dependencies = [
+    "spotipy>=2.23.0",
+    "tqdm>=4.65.0",
+    "pandas>=2.0.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=24.0.0",
+    "mypy>=1.0.0"
+]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
