@@ -78,3 +78,59 @@ def ensure_playlist(sp_client: Spotify, user_id: str, name: str, description: st
     if existing:
         return existing
     return create_playlist(sp_client=sp_client, user_id=user_id, name=name, description=description)
+
+
+def delete_playlists_by_prefix(sp_client: Spotify, user_id: str, prefix: str) -> int:
+    """
+    Entfernt alle Playlists des Nutzers, deren Name mit `prefix` beginnt.
+    Gibt die Anzahl der entfernten Playlists zurück.
+    """
+    logger = logging.getLogger(__name__)
+    removed = 0
+    limit = 50
+    offset = 0
+    while True:
+        page = sp_client.current_user_playlists(limit=limit, offset=offset)
+        items = page.get("items", [])
+        for pl in items:
+            name = pl.get("name", "")
+            pid = pl.get("id")
+            owner = pl.get("owner", {}).get("id")
+            if name.startswith(prefix) and owner == user_id:
+                sp_client.current_user_unfollow_playlist(pid)
+                logger.info(f"Entfernt Playlist: {name} ({pid})")
+                removed += 1
+        if len(items) < limit:
+            break
+        offset += limit
+    logger.info(f"Entfernte insgesamt {removed} Playlists mit Prefix '{prefix}'.")
+    return removed
+
+
+if __name__ == "__main__":
+    from lib.common.spotify_client import create_spotify_client
+
+    sp = create_spotify_client()
+    user_id = sp.current_user()["id"]
+    prefix = "Festify ·"
+
+    # Debug-Ausgabe: Zeige alle Playlists mit Name, Owner und ID
+    print("Gefundene Playlists:")
+    limit = 50
+    offset = 0
+    while True:
+        page = sp.current_user_playlists(limit=limit, offset=offset)
+        items = page.get("items", [])
+        print(f"Offset: {offset}, Anzahl Playlists auf Seite: {len(items)}")  # <-- Hier einfügen
+        for pl in items:
+            name = pl.get("name", "")
+            pid = pl.get("id")
+            owner = pl.get("owner", {}).get("id")
+            print(f"Name='{name}', Owner='{owner}', ID='{pid}'")
+        if len(items) < limit:
+            break
+        offset += limit
+
+    # Löschen der Playlists mit passendem Prefix
+    deleted = delete_playlists_by_prefix(sp, user_id, prefix)
+    print(f"Entfernte {deleted} Playlists mit Prefix '{prefix}'.")
