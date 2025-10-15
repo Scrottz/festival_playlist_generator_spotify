@@ -1,7 +1,7 @@
 """Configuration constants for the Spotify Festival Playlist Generator."""
 
 # Spotify OAuth settings
-SPOTIFY_SCOPES = ["playlist-modify-public", "playlist-modify-private"]
+SPOTIFY_SCOPES = ["playlist-read-private", "playlist-modify-private", "playlist-modify-public"]
 SPOTIFY_REDIRECT_URI = "http://127.0.0.1:8888/callback"
 
 # General project settings
