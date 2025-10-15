@@ -8,9 +8,16 @@ Note:
     grouping by prefixing playlist titles (e.g., "Festify · partysan_2026").
 """
 
-from typing import Iterable, Optional, Set, Dict, Any
+import re
+from datetime import date
+from tqdm import tqdm
 import logging
+from typing import Iterable, Optional, Set, Dict, Any
 from spotipy import Spotify
+from lib.common.utils import slug
+from lib.common.artist_utils import get_artist_id, get_top_tracks
+from lib.common.export_utils import export_playlist
+from lib.common.spotify_client import create_spotify_client
 
 
 def find_playlist_by_name(sp_client: Spotify, user_id: str, name: str) -> Optional[Dict[str, Any]]:
@@ -66,7 +73,6 @@ def add_tracks(sp_client: Spotify, playlist_id: str, track_ids: Iterable[str]) -
     if not batch:
         return
     logger = logging.getLogger(__name__)
-    logger.info(f"Adding {len(batch)} new tracks to playlist {playlist_id}...")
     for i in range(0, len(batch), 100):
         chunk = batch[i:i + 100]
         sp_client.playlist_add_items(playlist_id=playlist_id, items=chunk)
@@ -117,8 +123,94 @@ def set_playlist_description(spotify_client, user_id, playlist_id, description):
     """
     spotify_client.user_playlist_change_details(user=user_id, playlist_id=playlist_id, description=description)
 
+def generate_festival_playlist(
+    sp_client,
+    user_id,
+    lineup,
+    festival_name,
+    year,
+    top_n=3,
+    export_dir="res/playlists",
+    quiet=False
+):
+    """
+    Creates or updates a festival playlist on Spotify and exports track data.
+
+    Args:
+        sp_client: Authenticated Spotipy client.
+        user_id: Spotify user ID.
+        lineup: Iterable of artist names.
+        festival_name: Name of the festival.
+        year: Year of the festival.
+        top_n: Number of top tracks per artist to add.
+        export_dir: Directory to export playlist data.
+        quiet: If True, suppresses info logging.
+
+    Returns:
+        Tuple of (playlist title, number of new tracks added).
+    """
+
+    fest_slug = slug(festival_name)
+    playlist_title = f"Festify · {festival_name.replace('_', ' ').strip().title()} {year}"
+    playlist_description = (
+        f"This is an automatically generated playlist for {festival_name.strip().title()} - {year} "
+        f"as of {date.today().isoformat()}. It is updated sporadically."
+    )
+
+    logger = logging.getLogger(__name__)
+    if not quiet:
+        logger.info(f"Target playlist name resolved: {playlist_title}")
+
+    # Ensure playlist exists or create it
+    playlist = ensure_playlist(
+        sp_client=sp_client,
+        user_id=user_id,
+        name=playlist_title,
+        description=playlist_description
+    )
+    set_playlist_description(sp_client, user_id, playlist["id"], playlist_description)
+    playlist_id = playlist["id"]
+    existing_track_ids = get_playlist_track_ids(sp_client, playlist_id)
+
+    new_track_ids = set()
+    export_data = []
+
+    # Process each artist in the lineup
+    for artist in tqdm(lineup, desc=f"Processing {festival_name.strip().title()}", unit="artist", ncols=100, leave=True):
+        artist_id = get_artist_id(sp_client=sp_client, name=artist)
+        if not artist_id:
+            continue
+        top_tracks = get_top_tracks(sp_client=sp_client, artist_id=artist_id, limit=top_n)
+        fresh_ids = [tid for tid in top_tracks if tid and tid not in existing_track_ids and tid not in new_track_ids]
+        if fresh_ids:
+            add_tracks(sp_client=sp_client, playlist_id=playlist_id, track_ids=fresh_ids)
+            for tid in fresh_ids:
+                tr = sp_client.track(tid)
+                export_data.append({
+                    "artist": artist,
+                    "track_name": tr["name"],
+                    "track_id": tid,
+                    "spotify_url": tr["external_urls"]["spotify"],
+                })
+            new_track_ids.update(fresh_ids)
+
+    # Export playlist data if new tracks were added
+    if export_data:
+        export_playlist(
+            playlist_name=playlist_title,
+            data=export_data,
+            export_dir=export_dir,
+            is_lineup=False,
+            festival_slug=fest_slug,
+            year=year,
+        )
+
+    if not quiet:
+        logger.info(f"Done: {playlist_title} (+{len(new_track_ids)} new tracks)")
+    return playlist_title, len(new_track_ids)
+
+
 if __name__ == "__main__":
-    from lib.common.spotify_client import create_spotify_client
 
     sp = create_spotify_client()
     user_id = sp.current_user()["id"]
