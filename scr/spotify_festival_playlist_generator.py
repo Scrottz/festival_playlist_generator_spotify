@@ -1,31 +1,18 @@
-"""
-Spotify Festival Playlist Generator
-
-Creates or updates Spotify playlists for a given lineup.
-Supports quiet mode (--quiet): hides all console logs, keeps progress bar visible.
-"""
-
 import argparse
 import logging
-import os
 import re
-import sys
 import time
 from pathlib import Path
 from tqdm import tqdm
 from contextlib import contextmanager
+import concurrent.futures
 
 from lib.common.logger import setup_logger
-from lib.common.spotify_client import create_spotify_client
-from lib.common.playlist_manager import ensure_playlist, add_tracks, get_playlist_track_ids
+from lib.common.spotify_client import create_spotify_client, get_spotify_client_and_user_id
+from lib.common.playlist_manager import ensure_playlist, add_tracks, get_playlist_track_ids, delete_playlists_by_prefix
 from lib.common.artist_utils import get_artist_id, get_top_tracks
 from lib.common.lineup_loader import load_lineup_from_csv
 from lib.common.export_utils import export_playlist
-
-
-# ---------------------------------------------------------------------------
-# Utility
-# ---------------------------------------------------------------------------
 
 def _slug(text: str) -> str:
     """Return a lowercase, underscore-separated version of the given text."""
@@ -59,10 +46,6 @@ def silence_stream_logs():
         for handler in removed:
             root_logger.addHandler(handler)
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate or update festival playlists on Spotify.")
     parser.add_argument("--lineup", required=True, help="Path to the festival lineup (CSV).")
@@ -71,6 +54,7 @@ def main() -> None:
     parser.add_argument("--top_n", type=int, default=3, help="Number of top tracks per artist.")
     parser.add_argument("--log_level", default="INFO", help="Logging level (default: INFO).")
     parser.add_argument("--quiet", action="store_true", help="Hide console logs but keep progress bar.")
+    parser.add_argument("--delete_old_playlists", action="store_true", help="Delete old playlists with matching prefix before creating new ones.")
     args = parser.parse_args()
 
     setup_logger(level=args.log_level, log_dir="logs", quiet=args.quiet)
@@ -91,12 +75,20 @@ def main() -> None:
     year_match = re.search(r"(\d{4})", lineup_path.name)
     year_val = year_match.group(1) if year_match else lineup_path.parent.name
     schema = _schema_name(fest_slug, year_val)
-    playlist_title = f"Festify · {schema}"
+    playlist_title = f"Festify · {args.festival.strip().title()} {year_val}"
 
     if not args.quiet:
         logger.info(f"Target playlist name resolved: {playlist_title}")
 
     user_id = sp.current_user()["id"]
+
+    # Playlists löschen, falls gewünscht
+    if args.delete_old_playlists:
+        prefix = f"Festify · {args.festival.strip().title()}" if args.festival else "Festify"
+        deleted_count = delete_playlists_by_prefix(sp, user_id, prefix)
+        if not args.quiet:
+            logger.info(f"{deleted_count} alte Playlists mit Prefix '{prefix}' gelöscht.")
+
     playlist = ensure_playlist(
         sp_client=sp,
         user_id=user_id,
@@ -109,31 +101,32 @@ def main() -> None:
     new_track_ids = set()
     export_data = []
 
-    with silence_stream_logs():
-        pbar = tqdm(iterable=lineup, desc="Processing artists", unit="artist", ncols=100, leave=True)
-        for artist in pbar:
-            pbar.set_description(f"Artist: {artist[:30]}")
-            artist_id = get_artist_id(sp_client=sp, name=artist)
-            if not artist_id:
-                pbar.set_postfix_str("not found")
-                continue
-            top_tracks = get_top_tracks(sp_client=sp, artist_id=artist_id, limit=args.top_n)
-            fresh_ids = [tid for tid in top_tracks if tid and tid not in existing_track_ids and tid not in new_track_ids]
-            if not fresh_ids:
-                pbar.set_postfix_str("no new tracks")
-                continue
+    def process_artist(artist):
+        artist_id = get_artist_id(sp_client=sp, name=artist)
+        if not artist_id:
+            return []
+        top_tracks = get_top_tracks(sp_client=sp, artist_id=artist_id, limit=args.top_n)
+        fresh_ids = [tid for tid in top_tracks if tid and tid not in existing_track_ids and tid not in new_track_ids]
+        result = []
+        if fresh_ids:
             add_tracks(sp_client=sp, playlist_id=playlist_id, track_ids=fresh_ids)
-            new_track_ids.update(fresh_ids)
             for tid in fresh_ids:
                 tr = sp.track(tid)
-                export_data.append({
+                result.append({
                     "artist": artist,
                     "track_name": tr["name"],
                     "track_id": tid,
                     "spotify_url": tr["external_urls"]["spotify"],
                 })
-            time.sleep(0.3)
-        pbar.close()
+            new_track_ids.update(fresh_ids)
+        # time.sleep(0.3)  # Optional: entfernen oder anpassen
+        return result
+
+    with silence_stream_logs():
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(tqdm(executor.map(process_artist, lineup), total=len(lineup), desc="Processing artists", unit="artist", ncols=100, leave=True))
+        for artist_tracks in results:
+            export_data.extend(artist_tracks)
 
     if export_data:
         export_playlist(
@@ -146,7 +139,6 @@ def main() -> None:
         )
 
     print(f"\nDone: {playlist_title} (+{len(new_track_ids)} new tracks)")
-
 
 if __name__ == "__main__":
     main()
