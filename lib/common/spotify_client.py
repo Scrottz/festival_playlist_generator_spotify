@@ -52,6 +52,38 @@ def create_spotify_client(cache_path: str = ".cache-spotify") -> Spotify:
 
     return sp
 
+def get_spotify_client_and_user_id(cache_path: str = ".cache-spotify") -> tuple[Spotify, str]:
+    """
+    Erstellt einen authentifizierten Spotify-Client und gibt die User-ID zurück.
+
+    :param cache_path: Pfad zur Token-Cache-Datei.
+    :return: Tuple aus Spotify-Client und User-ID.
+    """
+    setup_logger(level="INFO")
+    logger = logging.getLogger(__name__)
+
+    client_id = os.getenv("SPOTIPY_CLIENT_ID")
+    client_secret = os.getenv("SPOTIPY_CLIENT_SECRET")
+    redirect_uri = os.getenv("SPOTIPY_REDIRECT_URI", SPOTIFY_REDIRECT_URI)
+
+    if not all([client_id, client_secret, redirect_uri]):
+        logger.error("Fehlende Spotify-Zugangsdaten oder Redirect URI.")
+        raise EnvironmentError("Spotify-Zugangsdaten nicht korrekt konfiguriert.")
+
+    auth_manager = SpotifyOAuth(
+        client_id=client_id,
+        client_secret=client_secret,
+        redirect_uri=redirect_uri,
+        scope=" ".join(SPOTIFY_SCOPES),
+        cache_path=cache_path,
+        open_browser=True,
+    )
+
+    sp = Spotify(auth_manager=auth_manager)
+    user_id = sp.current_user()["id"]
+    logger.info(f"Authentifiziert als User-ID: {user_id}")
+    return sp, user_id
+
 
 if __name__ == "__main__":
     # simple test run: shows your user info when executed directly
