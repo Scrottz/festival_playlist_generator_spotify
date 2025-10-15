@@ -106,6 +106,16 @@ def delete_playlists_by_prefix(sp_client: Spotify, user_id: str, prefix: str) ->
     logger.info(f"Entfernte insgesamt {removed} Playlists mit Prefix '{prefix}'.")
     return removed
 
+def set_playlist_description(spotify_client, user_id, playlist_id, description):
+    """
+    Setzt die Beschreibung einer Playlist bei Spotify.
+
+    :param spotify_client: Authentifizierter Spotipy-Client
+    :param user_id: Spotify User-ID
+    :param playlist_id: ID der Playlist
+    :param description: Beschreibungstext
+    """
+    spotify_client.user_playlist_change_details(user=user_id, playlist_id=playlist_id, description=description)
 
 if __name__ == "__main__":
     from lib.common.spotify_client import create_spotify_client
