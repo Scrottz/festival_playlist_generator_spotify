@@ -3,7 +3,6 @@
 import requests
 from bs4 import BeautifulSoup
 import logging
-from urllib.parse import urljoin
 
 
 def fetch_lineup(url: str = "https://www.party-san.de/bands-2026") -> list[str]:

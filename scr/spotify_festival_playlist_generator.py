@@ -8,8 +8,10 @@ from contextlib import contextmanager
 import concurrent.futures
 
 from lib.common.logger import setup_logger
-from lib.common.spotify_client import create_spotify_client, get_spotify_client_and_user_id
-from lib.common.playlist_manager import ensure_playlist, add_tracks, get_playlist_track_ids, delete_playlists_by_prefix, set_playlist_description
+from lib.common.spotify_client import create_spotify_client
+from lib.common.playlist_manager import (ensure_playlist, add_tracks, get_playlist_track_ids,
+                                         delete_playlists_by_prefix,
+                                         set_playlist_description)
 from lib.common.artist_utils import get_artist_id, get_top_tracks
 from lib.common.lineup_loader import load_lineup_from_csv
 from lib.common.export_utils import export_playlist
