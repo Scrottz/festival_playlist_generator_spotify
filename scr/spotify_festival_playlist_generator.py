@@ -1,153 +1,175 @@
+"""
+Lineup Fetcher (Festify Auto-Scraper Edition)
+
+Automatically fetches or creates a festival lineup.
+If no local lineup file exists, it uses the domain scraper
+(e.g., lib/domain/partysan.py) to populate res/lineups/{festival}/{year}/.
+
+Config-driven constants:
+    DEFAULT_TOP_N, DATA_DIR, PLAYLIST_DIR, LOG_DIR
+
+Supports:
+    --quiet   → suppress console logs, keep progress bar
+    --export  → export normalized lineup
+    --generate_playlist → trigger Spotify playlist generator
+    --delete_old_playlists → löscht alle alten Festify-Playlists vor dem Neuaufbau
+"""
+
 import argparse
+import importlib
 import logging
-import re
-from datetime import date
-from pathlib import Path
-from tqdm import tqdm
-from contextlib import contextmanager
-import concurrent.futures
+import os
+import sys
+from typing import List
 
+from conf.config import DEFAULT_TOP_N, DATA_DIR, LOG_DIR
 from lib.common.logger import setup_logger
-from lib.common.spotify_client import create_spotify_client
-from lib.common.playlist_manager import (ensure_playlist, add_tracks, get_playlist_track_ids,
-                                         delete_playlists_by_prefix,
-                                         set_playlist_description)
-from lib.common.artist_utils import get_artist_id, get_top_tracks
-from lib.common.lineup_loader import load_lineup_from_csv
+from lib.common.lineup_loader import load_lineup_from_csv, load_lineup_from_json
 from lib.common.export_utils import export_playlist
+from lib.common.spotify_client import get_spotify_client_and_user_id
+from lib.common.playlist_manager import delete_playlists_by_prefix, generate_festival_playlist
+from lib.common.utils import schema_name, slug
 
-def _slug(text: str) -> str:
-    """Return a lowercase, underscore-separated version of the given text."""
-    s = re.sub(r"[^\w\s-]", "_", text.strip().lower())
-    s = re.sub(r"\s+", "_", s)
-    return re.sub(r"_+", "_", s).strip("_") or "unknown"
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
 
-def _schema_name(festival_key: str, year_val: str | int) -> str:
-    """Return 'festival_year' as canonical naming schema."""
-    return f"{_slug(str(festival_key))}_{_slug(str(year_val))}"
+def _find_lineup_path(festival: str, year: str) -> str | None:
+    base_dir = os.path.join(DATA_DIR, festival.lower(), str(year))
+    csv_path = os.path.join(base_dir, f"{festival.lower()}_{year}.csv")
+    json_path = os.path.join(base_dir, f"{festival.lower()}_{year}.json")
 
-def _resolve_lineup_path(lineup_arg: str) -> Path:
-    """Resolve a lineup path argument safely."""
-    path = Path(lineup_arg).resolve()
-    if not path.exists():
-        raise FileNotFoundError(f"Lineup file not found: {path}")
-    return path
+    if os.path.exists(csv_path):
+        return csv_path
+    if os.path.exists(json_path):
+        return json_path
 
-@contextmanager
-def silence_stream_logs():
-    """Temporarily remove all console StreamHandlers (for clean tqdm output)."""
-    root_logger = logging.getLogger()
-    removed = []
-    for handler in list(root_logger.handlers):
-        if isinstance(handler, logging.StreamHandler):
-            root_logger.removeHandler(handler)
-            removed.append(handler)
+    if os.path.isdir(base_dir):
+        for f in os.listdir(base_dir):
+            if f.lower().endswith((".csv", ".json")):
+                return os.path.join(base_dir, f)
+    return None
+
+def _auto_fetch_from_scraper(festival: str, year: str) -> str:
+    logger = logging.getLogger(__name__)
+    module_name = f"lib.domain.{festival.lower()}"
+    base_dir = os.path.join(DATA_DIR, festival.lower(), str(year))
+    os.makedirs(base_dir, exist_ok=True)
+    output_path = os.path.join(base_dir, f"{festival.lower()}_{year}.csv")
+
     try:
-        yield
-    finally:
-        for handler in removed:
-            root_logger.addHandler(handler)
+        scraper = importlib.import_module(module_name)
+        if not hasattr(scraper, "fetch_lineup"):
+            raise AttributeError(f"Module {module_name} has no fetch_lineup() function.")
+        lineup = scraper.fetch_lineup()
+        if not lineup:
+            logger.warning(f"Scraper for {festival} returned no data.")
+            lineup = ["(empty lineup placeholder)"]
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write("artist\n")
+            for artist in lineup:
+                f.write(f"{artist}\n")
+        logger.info(f"Fetched lineup via scraper and wrote to {output_path}")
+        return output_path
+    except ImportError:
+        logger.warning(f"No scraper found for {festival} (lib/domain/{festival}.py). Creating placeholder.")
+    except Exception as e:
+        logger.error(f"Failed to auto-fetch lineup for {festival} {year}: {e}")
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write("artist\n(empty lineup placeholder)\n")
+    return output_path
+
+def fetch_lineup(file_path: str) -> List[str]:
+    logger = logging.getLogger(__name__)
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"Lineup file not found: {file_path}")
+
+    if file_path.lower().endswith(".csv"):
+        logger.info(f"Loading lineup from CSV: {file_path}")
+        return load_lineup_from_csv(file_path=file_path)
+    elif file_path.lower().endswith(".json"):
+        logger.info(f"Loading lineup from JSON: {file_path}")
+        return load_lineup_from_json(file_path=file_path)
+    else:
+        raise ValueError(f"Unsupported lineup format: {os.path.splitext(file_path)[1]}")
+
+def generate_festify_name(festival: str, year: str) -> str:
+    return f"Festify · {schema_name(festival_key=festival, year_val=year)}"
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate or update festival playlists on Spotify.")
-    parser.add_argument("--lineup", required=True, help="Path to the festival lineup (CSV).")
-    parser.add_argument("--festival", help="Festival name (e.g., Partysan).")
-    parser.add_argument("--playlist_name", help="Optional custom playlist name.")
-    parser.add_argument("--top_n", type=int, default=3, help="Number of top tracks per artist.")
+    parser = argparse.ArgumentParser(description="Auto-fetch, scrape, and normalize festival lineup data.")
+    parser.add_argument("--festival", required=True, nargs='+', help="Festival key(s), z.B. partysan wacken.")
+    parser.add_argument("--year", required=True, help="Festival year (z.B. 2026).")
+    parser.add_argument("--export", action="store_true", help="Export normalized lineup to res/lineups/.")
+    parser.add_argument("--generate_playlist", action="store_true",
+                        help="Trigger Spotify playlist generation after fetching lineup.")
     parser.add_argument("--log_level", default="INFO", help="Logging level (default: INFO).")
-    parser.add_argument("--quiet", action="store_true", help="Hide console logs but keep progress bar.")
-    parser.add_argument("--delete_old_playlists", action="store_true", help="Delete old playlists with matching prefix before creating new ones.")
+    parser.add_argument("--quiet", action="store_true",
+                        help="Suppress all console logs (keep progress bar visible).")
+    parser.add_argument("--delete_old_playlists", action="store_true",
+                        help="Löscht alle alten Festify-Playlists vor dem Neuaufbau.")
     args = parser.parse_args()
 
-    setup_logger(level=args.log_level, log_dir="logs", quiet=args.quiet)
+    setup_logger(level=args.log_level, log_dir=LOG_DIR, quiet=args.quiet)
     logger = logging.getLogger(__name__)
 
-    if not args.quiet:
-        logger.info("Starting Spotify Festival Playlist Generator.")
+    # Spotify-Authentifizierung (hier ggf. anpassen)
+    sp_client = None
+    user_id = None
+    if args.generate_playlist or args.delete_old_playlists:
+        sp_client, user_id = get_spotify_client_and_user_id()
 
-    sp = create_spotify_client()
-    lineup_path = _resolve_lineup_path(args.lineup)
-    lineup = load_lineup_from_csv(lineup_path)
-    if not lineup:
-        if not args.quiet:
-            logger.error("No artists found in lineup file.")
-        return
+    if args.delete_old_playlists and sp_client and user_id:
+        removed = delete_playlists_by_prefix(sp_client, user_id, "Festify")
+        logger.info(f"Entfernt {removed} alte Festify-Playlists.")
 
-    fest_slug = _slug(args.festival) if args.festival else lineup_path.parent.parent.name
-    year_match = re.search(r"(\d{4})", lineup_path.name)
-    year_val = year_match.group(1) if year_match else lineup_path.parent.name
-    schema = _schema_name(fest_slug, year_val)
-    playlist_title = f"Festify · {args.festival.strip().title()} {year_val}"
+    for festival in args.festival:
+        lineup_path = _find_lineup_path(festival=festival, year=args.year)
+        if not lineup_path:
+            logger.warning(f"No lineup file found locally for {festival} {args.year}. Attempting scraper...")
+            lineup_path = _auto_fetch_from_scraper(festival=festival, year=args.year)
 
-    if not args.quiet:
-        logger.info(f"Target playlist name resolved: {playlist_title}")
+        logger.info(f"Using lineup file: {lineup_path}")
 
-    user_id = sp.current_user()["id"]
+        lineup = fetch_lineup(file_path=lineup_path)
+        if not lineup or lineup == ["(empty lineup placeholder)"]:
+            logger.warning("No valid artists found (placeholder or empty lineup in use).")
 
-    # Playlists löschen, falls gewünscht
-    if args.delete_old_playlists:
-        prefix = f"Festify · {args.festival.strip().title()}" if args.festival else "Festify"
-        deleted_count = delete_playlists_by_prefix(sp, user_id, prefix)
-        if not args.quiet:
-            logger.info(f"{deleted_count} alte Playlists mit Prefix '{prefix}' gelöscht.")
+        playlist_title = generate_festify_name(festival=festival, year=args.year)
+        logger.info(f"Detected festival='{festival}', year='{args.year}' → Playlist name: '{playlist_title}'")
+        logger.info(f"Artists loaded: {len(lineup)}")
 
-    playlist_description = (
-        f"This is an automatically generated playlist for {args.festival.strip().title()} - {year_val} "
-        f"as of {date.today().isoformat()}. It is updated sporadically."
-    )
+        if args.export:
+            export_playlist(
+                playlist_name=playlist_title,
+                data=[{"artist": name} for name in lineup],
+                export_dir=DATA_DIR,
+                is_lineup=True,
+                festival_slug=slug(text=festival),
+                year=args.year,
+            )
+            logger.info(f"Exported normalized lineup for {festival} {args.year}.")
 
-    playlist = ensure_playlist(
-        sp_client=sp,
-        user_id=user_id,
-        name=playlist_title,
-        description=playlist_description
-    )
+        if args.generate_playlist and sp_client and user_id:
+            playlist_title, new_tracks = generate_festival_playlist(
+                sp_client=sp_client,
+                user_id=user_id,
+                lineup=lineup,
+                festival_name=festival,
+                year=args.year,
+                top_n=DEFAULT_TOP_N,
+                export_dir=DATA_DIR,
+                quiet=args.quiet
+            )
+            logger.info(f"Generated playlist '{playlist_title}' with {new_tracks} new tracks.")
 
-    # Setze die Beschreibung explizit über playlist_manager
-    set_playlist_description(sp, user_id, playlist["id"], playlist_description)
-    playlist_id = playlist["id"]
-    existing_track_ids = get_playlist_track_ids(sp, playlist_id)
-
-    new_track_ids = set()
-    export_data = []
-
-    def process_artist(artist):
-        artist_id = get_artist_id(sp_client=sp, name=artist)
-        if not artist_id:
-            return []
-        top_tracks = get_top_tracks(sp_client=sp, artist_id=artist_id, limit=args.top_n)
-        fresh_ids = [tid for tid in top_tracks if tid and tid not in existing_track_ids and tid not in new_track_ids]
-        result = []
-        if fresh_ids:
-            add_tracks(sp_client=sp, playlist_id=playlist_id, track_ids=fresh_ids)
-            for tid in fresh_ids:
-                tr = sp.track(tid)
-                result.append({
-                    "artist": artist,
-                    "track_name": tr["name"],
-                    "track_id": tid,
-                    "spotify_url": tr["external_urls"]["spotify"],
-                })
-            new_track_ids.update(fresh_ids)
-        return result
-
-    with silence_stream_logs():
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            results = list(tqdm(executor.map(process_artist, lineup), total=len(lineup), desc="Processing artists", unit="artist", ncols=100, leave=True))
-        for artist_tracks in results:
-            export_data.extend(artist_tracks)
-
-    if export_data:
-        export_playlist(
-            playlist_name=playlist_title,
-            data=export_data,
-            export_dir="res/playlists",
-            is_lineup=False,
-            festival_slug=fest_slug,
-            year=year_val,
-        )
-
-    print(f"\nDone: {playlist_title} (+{len(new_track_ids)} new tracks)")
+            if args.quiet:
+                sys.argv.append("--quiet")
 
 if __name__ == "__main__":
     main()
