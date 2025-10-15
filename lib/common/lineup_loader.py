@@ -1,5 +1,6 @@
 """Loads festival lineups from CSV or JSON files."""
 
+import os
 import csv
 import json
 import logging
@@ -63,3 +64,30 @@ def load_lineup_from_json(file_path: str) -> list[str]:
 
     logger.info(f"Loaded {len(artists)} artists from JSON → {abs_path}")
     return artists
+
+def fetch_lineup(file_path: str) -> List[str]:
+    """
+    Loads a festival lineup from a CSV or JSON file.
+
+    Args:
+        file_path (str): Path to the lineup file.
+
+    Returns:
+        List[str]: List of artist names.
+
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        ValueError: If the file format is unsupported.
+    """
+    logger = logging.getLogger(__name__)
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"Lineup file not found: {file_path}")
+
+    if file_path.lower().endswith(".csv"):
+        logger.info(f"Loading lineup from CSV: {file_path}")
+        return load_lineup_from_csv(file_path=file_path)
+    elif file_path.lower().endswith(".json"):
+        logger.info(f"Loading lineup from JSON: {file_path}")
+        return load_lineup_from_json(file_path=file_path)
+    else:
+        raise ValueError(f"Unsupported lineup format: {os.path.splitext(file_path)[1]}")

@@ -24,78 +24,11 @@ from typing import List
 
 from conf.config import DEFAULT_TOP_N, DATA_DIR, LOG_DIR
 from lib.common.logger import setup_logger
-from lib.common.lineup_loader import load_lineup_from_csv, load_lineup_from_json
+from lib.common.lineup_loader import fetch_lineup
 from lib.common.export_utils import export_playlist
 from lib.common.spotify_client import get_spotify_client_and_user_id
 from lib.common.playlist_manager import delete_playlists_by_prefix, generate_festival_playlist
-from lib.common.utils import schema_name, slug
-
-# ---------------------------------------------------------------------------
-# Helper functions
-# ---------------------------------------------------------------------------
-
-def _find_lineup_path(festival: str, year: str) -> str | None:
-    base_dir = os.path.join(DATA_DIR, festival.lower(), str(year))
-    csv_path = os.path.join(base_dir, f"{festival.lower()}_{year}.csv")
-    json_path = os.path.join(base_dir, f"{festival.lower()}_{year}.json")
-
-    if os.path.exists(csv_path):
-        return csv_path
-    if os.path.exists(json_path):
-        return json_path
-
-    if os.path.isdir(base_dir):
-        for f in os.listdir(base_dir):
-            if f.lower().endswith((".csv", ".json")):
-                return os.path.join(base_dir, f)
-    return None
-
-def _auto_fetch_from_scraper(festival: str, year: str) -> str:
-    logger = logging.getLogger(__name__)
-    module_name = f"lib.domain.{festival.lower()}"
-    base_dir = os.path.join(DATA_DIR, festival.lower(), str(year))
-    os.makedirs(base_dir, exist_ok=True)
-    output_path = os.path.join(base_dir, f"{festival.lower()}_{year}.csv")
-
-    try:
-        scraper = importlib.import_module(module_name)
-        if not hasattr(scraper, "fetch_lineup"):
-            raise AttributeError(f"Module {module_name} has no fetch_lineup() function.")
-        lineup = scraper.fetch_lineup()
-        if not lineup:
-            logger.warning(f"Scraper for {festival} returned no data.")
-            lineup = ["(empty lineup placeholder)"]
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write("artist\n")
-            for artist in lineup:
-                f.write(f"{artist}\n")
-        logger.info(f"Fetched lineup via scraper and wrote to {output_path}")
-        return output_path
-    except ImportError:
-        logger.warning(f"No scraper found for {festival} (lib/domain/{festival}.py). Creating placeholder.")
-    except Exception as e:
-        logger.error(f"Failed to auto-fetch lineup for {festival} {year}: {e}")
-
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write("artist\n(empty lineup placeholder)\n")
-    return output_path
-
-def fetch_lineup(file_path: str) -> List[str]:
-    logger = logging.getLogger(__name__)
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"Lineup file not found: {file_path}")
-
-    if file_path.lower().endswith(".csv"):
-        logger.info(f"Loading lineup from CSV: {file_path}")
-        return load_lineup_from_csv(file_path=file_path)
-    elif file_path.lower().endswith(".json"):
-        logger.info(f"Loading lineup from JSON: {file_path}")
-        return load_lineup_from_json(file_path=file_path)
-    else:
-        raise ValueError(f"Unsupported lineup format: {os.path.splitext(file_path)[1]}")
-
-def generate_festify_name(festival: str, year: str) -> str:
-    return f"Festify · {schema_name(festival_key=festival, year_val=year)}"
+from lib.common.utils import schema_name, slug, find_lineup_path
 
 # ---------------------------------------------------------------------------
 # Main
@@ -118,7 +51,6 @@ def main() -> None:
     setup_logger(level=args.log_level, log_dir=LOG_DIR, quiet=args.quiet)
     logger = logging.getLogger(__name__)
 
-    # Spotify-Authentifizierung (hier ggf. anpassen)
     sp_client = None
     user_id = None
     if args.generate_playlist or args.delete_old_playlists:
@@ -129,10 +61,7 @@ def main() -> None:
         logger.info(f"Entfernt {removed} alte Festify-Playlists.")
 
     for festival in args.festival:
-        lineup_path = _find_lineup_path(festival=festival, year=args.year)
-        if not lineup_path:
-            logger.warning(f"No lineup file found locally for {festival} {args.year}. Attempting scraper...")
-            lineup_path = _auto_fetch_from_scraper(festival=festival, year=args.year)
+        lineup_path = find_lineup_path(festival=festival, year=args.year)
 
         logger.info(f"Using lineup file: {lineup_path}")
 
@@ -140,7 +69,7 @@ def main() -> None:
         if not lineup or lineup == ["(empty lineup placeholder)"]:
             logger.warning("No valid artists found (placeholder or empty lineup in use).")
 
-        playlist_title = generate_festify_name(festival=festival, year=args.year)
+        playlist_title = f"Festify · {schema_name(festival_key=festival, year_val=args.year)}"
         logger.info(f"Detected festival='{festival}', year='{args.year}' → Playlist name: '{playlist_title}'")
         logger.info(f"Artists loaded: {len(lineup)}")
 
