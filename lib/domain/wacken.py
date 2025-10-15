@@ -6,10 +6,11 @@ all band names from it. It is used as the data foundation for playlist generatio
 in the festival_playlist_generator_spotify project.
 
 Example:
-    >>> python3 -m lib.domain.wacken
+    python3 -m lib.domain.wacken
 """
 
-import requests, json
+import requests
+import json
 from lib.common.logger import setup_logger, get_logger
 
 # Initialize logger early
@@ -40,7 +41,7 @@ def fetch_wacken_lineup() -> list[str]:
         logger.error(f"Failed to parse JSON response: {e}")
         return []
 
-    bands = [entry["title"].strip() for entry in data if "title" in entry]
+    bands = [entry["artist"]["title"].strip() for entry in data if "artist" in entry and "title" in entry["artist"]]
     logger.info(f"Successfully parsed {len(bands)} bands from Wacken JSON")
 
     # Optional preview
@@ -50,6 +51,8 @@ def fetch_wacken_lineup() -> list[str]:
 
     return bands
 
+# Mapping für das Hauptskript
+fetch_lineup = fetch_wacken_lineup
 
 if __name__ == "__main__":
     bands = fetch_wacken_lineup()
