@@ -1,7 +1,7 @@
 import argparse
 import logging
 import re
-import time
+from datetime import date
 from pathlib import Path
 from tqdm import tqdm
 from contextlib import contextmanager
@@ -9,7 +9,7 @@ import concurrent.futures
 
 from lib.common.logger import setup_logger
 from lib.common.spotify_client import create_spotify_client, get_spotify_client_and_user_id
-from lib.common.playlist_manager import ensure_playlist, add_tracks, get_playlist_track_ids, delete_playlists_by_prefix
+from lib.common.playlist_manager import ensure_playlist, add_tracks, get_playlist_track_ids, delete_playlists_by_prefix, set_playlist_description
 from lib.common.artist_utils import get_artist_id, get_top_tracks
 from lib.common.lineup_loader import load_lineup_from_csv
 from lib.common.export_utils import export_playlist
@@ -89,12 +89,20 @@ def main() -> None:
         if not args.quiet:
             logger.info(f"{deleted_count} alte Playlists mit Prefix '{prefix}' gelöscht.")
 
+    playlist_description = (
+        f"This is an automatically generated playlist for {args.festival.strip().title()} - {year_val} "
+        f"as of {date.today().isoformat()}. It is updated sporadically."
+    )
+
     playlist = ensure_playlist(
         sp_client=sp,
         user_id=user_id,
         name=playlist_title,
-        description=f"Auto-generated playlist for {fest_slug} {year_val}. Top {args.top_n} tracks per artist."
+        description=playlist_description
     )
+
+    # Setze die Beschreibung explizit über playlist_manager
+    set_playlist_description(sp, user_id, playlist["id"], playlist_description)
     playlist_id = playlist["id"]
     existing_track_ids = get_playlist_track_ids(sp, playlist_id)
 
@@ -119,7 +127,6 @@ def main() -> None:
                     "spotify_url": tr["external_urls"]["spotify"],
                 })
             new_track_ids.update(fresh_ids)
-        # time.sleep(0.3)  # Optional: entfernen oder anpassen
         return result
 
     with silence_stream_logs():
