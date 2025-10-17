@@ -60,7 +60,7 @@ For each festival, the performing bands are loaded and the top 5 songs of each b
 ## Installation
 
 - Python >= 3.10 required
-- Install dependencies via Poetry or pip:
+- Install dependencies via pip:
   `pip install .`
 
 ## Usage
